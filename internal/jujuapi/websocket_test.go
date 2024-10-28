@@ -23,11 +23,10 @@ import (
 
 	"github.com/canonical/jimm/v3/internal/dbmodel"
 	"github.com/canonical/jimm/v3/internal/jimmhttp"
-	"github.com/canonical/jimm/v3/internal/jimmtest"
 	"github.com/canonical/jimm/v3/internal/jujuapi"
 	"github.com/canonical/jimm/v3/internal/openfga"
 	ofganames "github.com/canonical/jimm/v3/internal/openfga/names"
-	"github.com/canonical/jimm/v3/internal/wellknownapi"
+	"github.com/canonical/jimm/v3/internal/testutils/jimmtest"
 )
 
 type websocketSuite struct {
@@ -62,7 +61,7 @@ func (s *websocketSuite) SetUpTest(c *gc.C) {
 		jimmhttp.NewHTTPProxyHandler(s.JIMM),
 	)
 	mux.Handle("/model/*", http.StripPrefix("/model", jujuapi.ModelHandler(ctx, s.JIMM, s.Params)))
-	jwks := wellknownapi.NewWellKnownHandler(s.JIMM.CredentialStore)
+	jwks := jimmhttp.NewWellKnownHandler(s.JIMM.CredentialStore)
 	mux.HandleFunc("/.well-known/jwks.json", jwks.JWKS)
 
 	s.APIHandler = mux

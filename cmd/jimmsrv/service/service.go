@@ -15,6 +15,7 @@ import (
 	"github.com/antonlindstrom/pgstore"
 	cofga "github.com/canonical/ofga"
 	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/juju/names/v5"
@@ -26,14 +27,13 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/canonical/jimm/v3/internal/auth"
-	"github.com/canonical/jimm/v3/internal/dashboard"
 	"github.com/canonical/jimm/v3/internal/dbmodel"
-	"github.com/canonical/jimm/v3/internal/debugapi"
 	"github.com/canonical/jimm/v3/internal/discharger"
 	"github.com/canonical/jimm/v3/internal/errors"
 	"github.com/canonical/jimm/v3/internal/jimm"
 	jimmcreds "github.com/canonical/jimm/v3/internal/jimm/credentials"
 	"github.com/canonical/jimm/v3/internal/jimmhttp"
+	"github.com/canonical/jimm/v3/internal/jimmhttp/rebac_admin"
 	"github.com/canonical/jimm/v3/internal/jimmjwx"
 	"github.com/canonical/jimm/v3/internal/jujuapi"
 	"github.com/canonical/jimm/v3/internal/jujuclient"
@@ -42,9 +42,7 @@ import (
 	"github.com/canonical/jimm/v3/internal/openfga"
 	ofganames "github.com/canonical/jimm/v3/internal/openfga/names"
 	"github.com/canonical/jimm/v3/internal/pubsub"
-	"github.com/canonical/jimm/v3/internal/rebac_admin"
 	"github.com/canonical/jimm/v3/internal/vault"
-	"github.com/canonical/jimm/v3/internal/wellknownapi"
 )
 
 const (
@@ -139,13 +137,6 @@ type Params struct {
 	// secrets engine JIMM will use to store secrets.
 	VaultPath string
 
-	// DashboardLocation contains the location where the JAAS dashboard
-	// can be found. If this location parses as an absolute URL then
-	// requests to /dashboard will redirect to that URL. If this is a
-	// filesystem path then the dashboard files will be served from
-	// that path.
-	DashboardLocation string
-
 	// PublicDNSName is the name to advertise as the public address of
 	// the juju controller.
 	PublicDNSName string
@@ -194,6 +185,10 @@ type Params struct {
 	// LogSQL determines whether ORM queries are printed when debug logs are enabled.
 	// This may leak secrets in logs when sensitive values are stored in the DB like OAuth tokens.
 	LogSQL bool
+
+	// LogLevel is the default logger is set.
+	// Setting this to "debug" enables the requests logger as well.
+	LogLevel string
 }
 
 // A Service is the implementation of a JIMM server.
@@ -283,6 +278,9 @@ func NewService(ctx context.Context, p Params) (*Service, error) {
 	s := new(Service)
 	s.mux = chi.NewRouter()
 
+	s.mux.Use(chimiddleware.RequestLogger(&logger.HTTPLogFormatter{}))
+	s.mux.Use(middleware.MeasureHTTPResponseTime)
+
 	// Setup all dependency services
 
 	if p.ControllerUUID == "" {
@@ -329,7 +327,6 @@ func NewService(ctx context.Context, p Params) (*Service, error) {
 	if err := ensureControllerAdministrators(ctx, openFGAclient, p.ControllerUUID, p.ControllerAdmins); err != nil {
 		return nil, errors.E(op, err, "failed to ensure controller admins")
 	}
-
 	if err := s.setupCredentialStore(ctx, p); err != nil {
 		return nil, errors.E(op, err)
 	}
@@ -417,15 +414,15 @@ func NewService(ctx context.Context, p Params) (*Service, error) {
 
 	mountHandler(
 		"/debug",
-		debugapi.NewDebugHandler(
-			map[string]debugapi.StatusCheck{
-				"start_time": debugapi.ServerStartTime,
+		jimmhttp.NewDebugHandler(
+			map[string]jimmhttp.StatusCheck{
+				"start_time": jimmhttp.ServerStartTime,
 			},
 		),
 	)
 	mountHandler(
 		"/.well-known",
-		wellknownapi.NewWellKnownHandler(s.jimm.CredentialStore),
+		jimmhttp.NewWellKnownHandler(s.jimm.CredentialStore),
 	)
 
 	if p.DashboardFinalRedirectURL == "" {
@@ -465,12 +462,6 @@ func NewService(ctx context.Context, p Params) (*Service, error) {
 		"/model/{uuid}/{type:charms|applications}",
 		jimmhttp.NewHTTPProxyHandler(&s.jimm),
 	)
-
-	// If the request is not for a known path assume it is part of the dashboard.
-	// If dashboard location env var is not defined, do not handle a dashboard.
-	if p.DashboardLocation != "" {
-		s.mux.Handle("/", dashboard.Handler(ctx, p.DashboardLocation, p.PublicDNSName))
-	}
 
 	return s, nil
 }
